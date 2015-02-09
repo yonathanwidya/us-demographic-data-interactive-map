@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Correlation</title>
+    <meta charset="utf-8">
+    <link href=bootstrap-3.1.1-dist/css/bootstrap.css rel=stylesheet media="screen">
+
+</head>
+<style>
+
+svg {
+    font: 10px sans-serif;
+}
+
+#divHeader {
+    background-color: gray;
+    height: 39px;
+}
+
+.headerElement {
+    display: inline-block;
+}
+
+#divOptionText {
+    margin-left: 20px;
+}
+
+.headerTitle {
+    color: white;
+    font-family: serif;
+}
+
+.selectionBox {
+    margin-top: 9px;
+    margin-left: 5px;
+}
+
+#divBackButton {
+    position:absolute;
+    right:0;
+    margin-right:10px;
+    margin-top: 4px;
+}
+
+.pcp_background path {
+    fill: none;
+    stroke: #ccc;
+    stroke-opacity: .4;
+    shape-rendering: crispEdges;
+}
+
+.pcp_foreground path {
+    fill: none;
+    stroke: steelblue;
+    stroke-width:1;
+    stroke-opacity: .7;
+}
+
+.pcp_brush .extent {
+    fill-opacity: .4;
+    shape-rendering: crispEdges;
+}
+
+.pcp_axis line{
+    stroke:black;
+}
+.pcp_axis path {
+    fill: none;
+    stroke: #393b79;
+    stroke-width:2;
+    shape-rendering: crispEdges;
+}
+
+.pcp_axis text {
+    text-shadow: 0 2px 0 #fff;
+    cursor: move;
+    font-size:45;
+    font-family:Verdana;
+}
+
+.scatter_axis text {
+    font: 10px sans-serif;
+}
+
+.scatter_axis path,
+.scatter_axis line {
+    fill: none;
+    stroke: #000;
+}
+
+</style>
+
+<div id="divHeader">
+    <div class="headerElement" id ="divOptionText">
+        <h4 class="headerTitle">Select Option:</h4>
+    </div>
+    <div class="headerElement">
+        <select class="selectionBox" id="optionSelectionBox" onchange="update()">
+            <option value="pcp">Parallel Coordinates Plot (based on states)</option>
+            <option value="scatterPlot">Scatter Plot (based on counties)</option>
+        </select>
+    </div>
+    <div class="headerElement" id="divBackButton">
+        <a href="US-Demographics.html">
+        <img src="http://dabuttonfactory.com/button.png?t=Go+Back&f=Komika-Bold&ts=14&tc=fff&tshs=1&tshc=000&hp=20&vp=8&c=5&bgt=gradient&bgc=3d85c6&ebgc=073763"/>
+        </a>
+    </div>
+</div>
+
+<div>
+    <div id ="svgArea"></div>
+</div>
+
+
+<body>
+
+<script src=jquery-2.1.0/jquery-2.1.0.min.js></script>
+<script src=bootstrap-3.1.1-dist/js/bootstrap.min.js></script>
+<script src=D3/d3.min.js></script>
+<script src=D3/queue.v1.min.js></script>
+<script src=D3/topojson.v1.min.js></script>
+<script src=accounting.min.js></script>
+
+<script>
+
+//------------------------------------------------------------//
+
+var pcp_margin = {top: 120, right: 10, bottom: 20, left: 20},
+    pcp_width = 960 - pcp_margin.left - pcp_margin.right,
+    pcp_height = 500 - pcp_margin.top - pcp_margin.bottom;
+
+var pcp_x = {},
+    pcp_y = {},
+    pcp_dragging = {};
+
+var pcp_line = d3.svg.line(),
+    pcp_axis = d3.svg.axis().orient("left"),
+    pcp_background,
+    pcp_foreground;
+
+var pcp_dimensions;
+
+//------------------------------------------------------------//
+
+var scatter_margin = {top: 30, right: 30, bottom: 30, left: 30};
+var scatter_width = 150, scatter_height = 150;
+
+var scatter_dimensions = ["density", "income_per_capita", "bachelor", "unemployment", "poverty", "foreign_born"];
+var scatter_dimensionText = ["Population Density", "Income per Capita (US$)", "Bachelor Degree (%)", "Unemployment (%)", "Below Poverty (%)", "Foreign-Born (%)"];
+
+var scatterX = d3.scale.linear().range([0, scatter_width]);
+var scatterY = d3.scale.linear().range([scatter_height, 0]);
+
+var scatter_xAxis = d3.svg.axis()
+                    .scale(scatterX)
+                    .orient("bottom")
+                    .ticks(4);
+
+var scatter_yAxis = d3.svg.axis()
+                    .scale(scatterY)
+                    .orient("left")
+                    .ticks(4);
+
+//------------------------------------------------------------//
+
+update();
+
+function update()
+{
+    d3.selectAll("svg").remove();
+
+    var selection = document.getElementById("optionSelectionBox");
+
+    if (selection.options[selection.selectedIndex].value == "pcp")
+    {
+        var pcp_svg = d3.select("#svgArea").append("svg")
+                        .attr("width", pcp_width + pcp_margin.left + pcp_margin.right)
+                        .attr("height", pcp_height + pcp_margin.top + pcp_margin.bottom)
+                        .append("g")
+                        .attr("transform", "translate(" + pcp_margin.left + "," + pcp_margin.top + ")");
+
+        d3.tsv("pcp.tsv",function(error, data)
+        {
+            data.forEach(function(d) {
+                d.population_density  = +d.population_density;
+                d.income_per_capita   = +d.income_per_capita;
+                d.bachelor            = +d.bachelor;
+                d.unemployment        = +d.unemployment;
+            });
+
+            pcp_dimensions = d3.keys(data[0]).filter(function(d){return d !="id" });
+
+            // we create the scale distribution for ordinal data
+            pcp_x= d3.scale.ordinal().rangePoints([0, pcp_width], 1)
+                      .domain(pcp_dimensions);
+
+            // y contains the scaling factors for all the pcp_dimensions
+            for (i = 0; i < pcp_dimensions.length; i++)
+            {
+                pcp_y[pcp_dimensions[i]]  = d3.scale.linear()
+                                               .domain(d3.extent(data, function(d){return d[pcp_dimensions[i]]})).nice()
+                                               .range([pcp_height,0]);
+            }
+
+            // If our lines are not selected (background), change their color to something "less" important
+            pcp_background = pcp_svg.append("g")
+                                .attr("class", "pcp_background")
+                                .selectAll("path")
+                                .data(data)
+                                .enter()
+                                .append("path")
+                                .attr("d", path);
+
+            pcp_foreground = pcp_svg.append("g")
+                                .attr("class", "pcp_foreground")
+                                .selectAll("path")
+                                .data(data)
+                                .enter()
+                                .append("path")
+                                .attr("d", path)
+                                .style("stroke", "blue");
+                    
+
+             // create a "g" element that you can translate according to the number of pcp_dimensions your data has
+            var g = pcp_svg.selectAll(".dimension")
+                    .data(pcp_dimensions)
+                    .enter().append("g")
+                    .attr("class", "dimension")
+                    .attr("transform", function(d) { return "translate(" + pcp_x(d) + ")"; })
+
+            // Add an axis and title.
+            g.append("g")
+                .attr("class", "pcp_axis")
+                .each(function(d) { d3.select(this).call(pcp_axis.scale(pcp_y[d])); })
+                .append("text")
+                .attr("text-anchor", "middle")
+                .attr("y", -50)
+                .attr("stroke","#6666FF")
+                .attr("font-size","15") 
+                .attr("font-family","Verdana")
+                .text(String);
+
+
+            // Add and store a brush for each axis.
+            g.append("g")
+                .attr("class", "pcp_brush")
+                .each(function(d) {
+                    d3.select(this).call(pcp_y[d].brush = d3.svg.brush()
+                            .y(pcp_y[d])
+                            .on("brush", brush));
+                })
+                .selectAll("rect")
+                .attr("x", -8)
+                .attr("width", 16)
+                .style("fill","#cc0");
+
+        });
+    }
+    else if (selection.options[selection.selectedIndex].value == "scatterPlot")
+    {
+        var scatter_svg = d3.select("#svgArea").append("svg")
+                            .attr("width", (scatter_dimensions.length * (scatter_width + scatter_margin.left + scatter_margin.right)) + 30)
+                            .attr("height", scatter_dimensions.length * (scatter_height + scatter_margin.top + scatter_margin.bottom))
+                            .append("g")
+                            .attr("transform", "translate(" + (((scatter_dimensions.length * (scatter_width + scatter_margin.left + scatter_margin.right) - (scatter_width + scatter_margin.right)) + 30)) + "," + (0 - (scatter_height + scatter_margin.bottom)) + ")");
+
+        d3.csv("scatter.csv", function(error, data)
+        {
+            for (var i = 0; i < scatter_dimensions.length; i++)
+            {
+                scatter_svg = scatter_svg.append("g")
+                                        .attr("transform", "translate(" + (0 - scatter_dimensions.length * (scatter_width + scatter_margin.left + scatter_margin.right)) + "," + (scatter_height + scatter_margin.top + scatter_margin.bottom) + ")");
+
+                for (var j = 0; j < scatter_dimensions.length; j++)
+                {
+                    scatter_svg = scatter_svg.append("g")
+                                            .attr("transform", "translate(" + (scatter_width + scatter_margin.left + scatter_margin.right) + "," + 0 + ")");
+
+                    if (i == j)
+                    {
+                        var text = scatter_svg.append("text")
+                                    .attr("text-anchor", "middle")
+                                    .attr("x", scatter_width / 2)
+                                    .attr("y", scatter_height / 2)
+                                    .attr("font-family", "serif")
+                                    .attr("font-size", "15px")
+                                    .style("fill", "blue")
+                                    .text(scatter_dimensionText[i]);
+                    }
+                    else
+                    {
+                        scatterX.domain(d3.extent(data, function(d){return +d[scatter_dimensions[j]];})).nice();
+                        scatterY.domain(d3.extent(data, function(d){return +d[scatter_dimensions[i]];})).nice();
+
+                        var color = d3.scale.linear()
+                                    .domain([scatterY.domain()[0], scatterY.domain()[1]])
+                                    .range(["red", "black"]);
+
+                        var scatterX_min = scatterX.domain()[0];
+                        var scatterX_max = scatterX.domain()[1];
+                        var scatterY_min = scatterY.domain()[0];
+                        var scatterY_max = scatterY.domain()[1];
+
+                        var dots = scatter_svg.append("g")
+                                    .selectAll("circle")
+                                    .data(data)
+                                    .enter()
+                                    .append("circle")
+                                    .attr("cx", function(d){return (+d[scatter_dimensions[j]] - scatterX_min) / (scatterX_max - scatterX_min) * scatterX.range()[1];})
+                                    .attr("cy", function(d){return (scatterY_max - +d[scatter_dimensions[i]]) / (scatterY_max - scatterY_min) * scatterY.range()[0];})
+                                    .attr("r", 1)
+                                    .style("fill", function(d){return color(+d[scatter_dimensions[i]])});
+
+                        scatter_svg.append("g")
+                                .attr("class", "scatter_axis")
+                                .attr("transform", "translate(0," + scatter_height + ")")
+                                .call(scatter_xAxis);
+
+                        scatter_svg.append("g")
+                                .attr("class", "scatter_axis")
+                                .call(scatter_yAxis);
+                    };
+                }
+            }
+        });
+    }
+}
+
+function position(d)
+{
+    var v = pcp_dragging[d];
+    return v == null ? pcp_x(d) : v;
+}
+
+// Returns the path for a given data point.
+function path(d)
+{
+    return pcp_line(pcp_dimensions.map(function(p) { return [position(p), pcp_y[p](d[p])]; }));
+}
+
+// Handles a brush event, toggling the display of foreground lines.
+function brush()
+{
+    // Actives return the axis you are applying a brush to!
+    // extents return the upper and lower limit of your selection
+    var actives = pcp_dimensions.filter(function(p) { return !pcp_y[p].brush.empty(); });
+    var extents = actives.map(function(p) { return pcp_y[p].brush.extent(); });
+
+    pcp_foreground.style("display", function(d)
+    {
+        return actives.every(function(p, i)
+        {
+            var point = (pcp_y[p].ticks)?d[p]:pcp_y[p](d[p]);
+            return extents[i][0] <= point && point <= extents[i][1];
+        }) ? null : "none";
+    });
+}
+
+</script>
+
+</body>
+</html>
